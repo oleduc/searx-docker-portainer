@@ -1,0 +1,37 @@
+# SearXNG limiter / bot-detection configuration.
+# https://docs.searxng.org/admin/searx.limiter.html
+[botdetection]
+
+ipv4_prefix = 32
+ipv6_prefix = 48
+
+# SearXNG runs behind the nginx reverse proxy, so the real client IP has to be
+# read from the X-Forwarded-For / X-Real-IP headers. Only requests coming from
+# these (private, internal) networks are trusted to set those headers. searxng
+# is never exposed directly, only nginx talks to it over the docker network.
+trusted_proxies = [
+  '127.0.0.0/8',
+  '::1',
+  '10.0.0.0/8',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
+  'fd00::/8',
+]
+
+[botdetection.ip_limit]
+
+# To get unlimited access in a local network, link-local addresses are not
+# monitored by the ip_limit by default.
+filter_link_local = false
+
+# The link_token method redirects the first request to obtain a token. It breaks
+# direct ?q= URLs, the browser search bar and the JSON API, so it is left off.
+link_token = false
+
+[botdetection.ip_lists]
+
+# Allow the SearXNG organisation IPs (e.g. check.searx.space) unrestricted access.
+pass_searxng_org = true
+
+block_ip = []
+pass_ip = []

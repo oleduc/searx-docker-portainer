@@ -1,5 +1,3 @@
-version: '3.7'
-
 services:
   download-template:
     build: https://github.com/oleduc/git-config.git
@@ -7,19 +5,17 @@ services:
     networks:
       - srx-lan
     command: -c "
-        mkdir -p /build/ && cd /build/ && rm -rf ./repo/ &&
+        mkdir -p /build/conf.d/certs/ && cd /build/ && rm -rf ./repo/ &&
         git clone ${CONFIG_REPO_URL} repo &&
         ls -la ./repo/ &&
-        mv ./repo/rules.json /build/filtron/ &&
-        envsubst '$${SEARX_HOSTNAME} $${STATIC_CACHE_INDEX_SIZE} $${STATIC_SERVER_CACHE_MAX_SIZE} $${STATIC_CACHE_INACTIVE} $${RESULTS_CACHE_INDEX_SIZE} $${RESULTS_SERVER_CACHE_MAX_SIZE} $${RESULTS_CACHE_EXPIRATION} $${RESULTS_CACHE_INACTIVE}' < ./repo/nginx-proxy.conf.template > /build/nginx/conf.d/nginx-proxy.conf &&
-        envsubst '$${UPSTREAM_PROTOCOL} $${STATIC_CACHE_EXPIRATION} $${STATIC_CLIENT_CACHE_MAX_AGE} $${RESULTS_CACHE_EXPIRATION} $${RESULTS_CLIENT_CACHE_MAX_AGE}' < ./repo/nginx-endpoints.conf.template > /build/nginx/nginx-endpoints.conf &&
-        mkdir -p /build/nginx/certs/ &&
-        cp /build/certs/* /build/nginx/certs/ &&
-        ls -la /build/ && ls -la /build/filtron/ && ls -la /build/nginx/ && ls -la /build/nginx/certs
+        envsubst '$${STATIC_CACHE_INDEX_SIZE} $${STATIC_SERVER_CACHE_MAX_SIZE} $${STATIC_CACHE_INACTIVE} $${RESULTS_CACHE_INDEX_SIZE} $${RESULTS_SERVER_CACHE_MAX_SIZE} $${RESULTS_CACHE_INACTIVE}' < ./repo/nginx-proxy.conf.template > /build/conf.d/nginx-proxy.conf &&
+        envsubst '$${STATIC_CACHE_EXPIRATION} $${STATIC_CLIENT_CACHE_MAX_AGE} $${RESULTS_CACHE_EXPIRATION} $${RESULTS_CLIENT_CACHE_MAX_AGE}' < ./repo/nginx-endpoints.conf.template > /build/conf.d/nginx-endpoints.include &&
+        cp /build/certs/* /build/conf.d/certs/ &&
+        mkdir -p /build/searxng/ &&
+        cp ./repo/limiter.toml /build/searxng/limiter.toml &&
+        ls -la /build/conf.d/ && ls -la /build/conf.d/certs/ && ls -la /build/searxng/
       "
     environment:
-      - SEARX_HOSTNAME=${SEARX_HOSTNAME:-localhost}
-      - UPSTREAM_PROTOCOL=${UPSTREAM_PROTOCOL:-http}
       - STATIC_CACHE_INDEX_SIZE=${STATIC_CACHE_INDEX_SIZE}
       - STATIC_SERVER_CACHE_MAX_SIZE=${STATIC_SERVER_CACHE_MAX_SIZE}
       - STATIC_CACHE_EXPIRATION=${STATIC_CACHE_EXPIRATION}
@@ -31,78 +27,79 @@ services:
       - RESULTS_CACHE_INACTIVE=${RESULTS_CACHE_INACTIVE}
       - RESULTS_CLIENT_CACHE_MAX_AGE=${RESULTS_CLIENT_CACHE_MAX_AGE}
     volumes:
-      - filtron-config:/build/filtron/:rw
-      - nginx-config:/build/nginx/:rw
-      - ${SSL_CERT_PATH}:/build/certs/fullchain.crt:rw
-      - ${SSL_KEY_PATH}:/build/certs/private.key:rw
-      - .:/git
+      - nginx-config:/build/conf.d/:rw
+      - searxng-config:/build/searxng/:rw
+      - ${SSL_CERT_PATH}:/build/certs/fullchain.crt:ro
+      - ${SSL_KEY_PATH}:/build/certs/private.key:ro
 
   searx-proxy:
     container_name: searx-proxy
-    image: nginx:1.21.3-alpine
+    image: nginx:1.27-alpine
+    # Drop the image's stock default.conf (it can be copied into the shared
+    # conf.d volume and would shadow our server block) before starting nginx.
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["rm -f /etc/nginx/conf.d/default.conf; exec nginx -g 'daemon off;'"]
     networks:
       - srx-lan
     restart: on-failure
     depends_on:
-      - "download-template"
+      download-template:
+        condition: service_completed_successfully
+      searxng:
+        condition: service_started
     ports:
       - ${NGINX_HTTP_PORT:-5080}:80
       - ${NGINX_HTTPS_PORT:-5443}:443
     volumes:
-      - nginx-config:/etc/nginx:rw
-      
-  filtron:
-    container_name: filtron
-    image: dalf/filtron
-    networks:
-      - srx-lan
-    depends_on:
-      - "download-template"
-      - "searx-proxy"
-    restart: always
-    ports:
-    #  - 4040:4040
-      - 4041:4041
-    command: -listen 0.0.0.0:4040 -api 0.0.0.0:4041 -target searx:8080
-    volumes:
-      - filtron-config:/etc/filtron/:rw
-    read_only: true
+      - nginx-config:/etc/nginx/conf.d:rw
 
-  searx:
-    container_name: searx
-    image: searx/searx:latest
+  searxng:
+    container_name: searxng
+    image: searxng/searxng:latest
     networks:
       - srx-lan
     depends_on:
-      - "download-template"
+      download-template:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_started
     restart: always
-    #ports:
-    #  - 8080:8080
-    command: ${SEARX_COMMAND:-}
     volumes:
-      - searx-data:/etc/searx:rw
-      - searx-data:/var/log/uwsgi:rw
+      - searxng-config:/etc/searxng:rw
+      - searxng-cache:/var/cache/searxng:rw
     environment:
-      - BIND_ADDRESS=0.0.0.0:8080
-      - BASE_URL=https://${SEARX_HOSTNAME}/
-      - MORTY_URL=https://${SEARX_HOSTNAME:-localhost}:${NGINX_HTTPS_PORT:-3443}/morty/
-      - MORTY_KEY=${MORTY_KEY}
+      - SEARXNG_BASE_URL=https://${SEARXNG_HOSTNAME:-localhost}/
+      - SEARXNG_SECRET=${SEARXNG_SECRET}
+      - SEARXNG_LIMITER=${SEARXNG_LIMITER:-true}
+      - SEARXNG_IMAGE_PROXY=${SEARXNG_IMAGE_PROXY:-true}
+      - SEARXNG_METHOD=${SEARXNG_METHOD:-POST}
+      - SEARXNG_VALKEY_URL=valkey://valkey:6379/0
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
 
-  morty:
-    container_name: morty
-    image: dalf/morty
+  valkey:
+    container_name: valkey
+    image: valkey/valkey:8-alpine
     networks:
       - srx-lan
-    depends_on:
-      - "download-template"
     restart: always
-    #ports:
-    #  - 3000:3000
-    command: -timeout 6 -ipv6
-    environment:
-      - MORTY_KEY=${MORTY_KEY}
-      - MORTY_ADDRESS=0.0.0.0:3000
-    read_only: true
+    command: valkey-server --save 30 1 --loglevel warning
+    volumes:
+      - valkey-data:/data
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "1"
 
 networks:
     srx-lan:
@@ -112,8 +109,9 @@ networks:
         com.docker.network.bridge.enable_ip_masquerade: 1
         com.docker.network.bridge.host_binding_ipv4: "0.0.0.0"
         com.docker.network.bridge.name: pv-searx3
-    
+
 volumes:
   nginx-config:
-  filtron-config:
-  searx-data:
+  searxng-config:
+  searxng-cache:
+  valkey-data:

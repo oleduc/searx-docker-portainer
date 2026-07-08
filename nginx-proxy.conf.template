@@ -1,31 +1,28 @@
-proxy_cache_path /etc/cache-static levels=1:2 keys_zone=searx_static:${STATIC_CACHE_INDEX_SIZE} max_size=${STATIC_SERVER_CACHE_MAX_SIZE}
+proxy_cache_path /var/cache/nginx/static levels=1:2 keys_zone=searx_static:${STATIC_CACHE_INDEX_SIZE} max_size=${STATIC_SERVER_CACHE_MAX_SIZE}
                  inactive=${STATIC_CACHE_INACTIVE} use_temp_path=off;
 
-proxy_cache_path /etc/cache-results levels=1:2 keys_zone=searx_results:${RESULTS_CACHE_INDEX_SIZE} max_size=${RESULTS_SERVER_CACHE_MAX_SIZE}
+proxy_cache_path /var/cache/nginx/results levels=1:2 keys_zone=searx_results:${RESULTS_CACHE_INDEX_SIZE} max_size=${RESULTS_SERVER_CACHE_MAX_SIZE}
                  inactive=${RESULTS_CACHE_INACTIVE} use_temp_path=off;
 
-upstream filtron-server { 
-  server filtron:4040; 
-  keepalive 64; 
+upstream searxng-server {
+  server searxng:8080;
+  keepalive 64;
 }
 
 server {
-    listen *:80 default_server;
-    listen [::]:80 default_server;
+    listen 80 default_server;
     server_name searx-proxy;
 
-    include /etc/nginx/nginx-endpoints.conf;
+    include /etc/nginx/conf.d/nginx-endpoints.include;
 }
 
 server {
-    listen *:443 ssl;
-    listen [::]:443 ssl;
+    listen 443 ssl;
+    http2 on;
     server_name searx-proxy;
 
-    ssl_certificate     /etc/nginx/certs/fullchain.crt;
-    ssl_certificate_key /etc/nginx/certs/private.key;
-    
-    include /etc/nginx/nginx-endpoints.conf;
+    ssl_certificate     /etc/nginx/conf.d/certs/fullchain.crt;
+    ssl_certificate_key /etc/nginx/conf.d/certs/private.key;
+
+    include /etc/nginx/conf.d/nginx-endpoints.include;
 }
-
-
